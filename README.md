@@ -9,6 +9,7 @@ Current version supports:
 - vcgencmd measure_volts {core,sdram_c,sdram_i,sdram_p}
 - vcgencmd get_throttled
 - vcgencmd pmic_read_adc
+- vcgencmd readmr
 - psutil.cpu_percent
 
 Telemetry is formatted so it's more easily readible when monitoring. The csv data is formatted so it's immediately usable in Excel.
