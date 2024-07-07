@@ -1,12 +1,50 @@
 import csv
 import os
 import psutil
-import subprocess
 import time
+import fcntl
+import struct
 
-def get_vcgencmd_output(command):
-    result = subprocess.check_output(command, shell=True)
-    return result.decode().strip()
+class Measure:
+    def __init__(self, command, value=""):
+        self.command = command
+        self.value = value
+
+class Message:
+    __format_string = '6I1028s'
+    def __init__(self):
+        self.header = [0] * 6
+        self.byte_array = bytearray(1028)
+
+    def pack(self):
+        return struct.pack(self.__format_string, *self.header, self.byte_array)
+
+    def unpack(self, data):
+        unpacked_data = struct.unpack(self.__format_string, data)
+        self.header = unpacked_data[:6]
+        self.byte_array = unpacked_data[6]
+
+    def get_size(self):
+        return struct.calcsize(self.__format_string)
+
+def get_vcgencmd_output(file_desc, command):
+    GET_GENCMD_RESULT = 0x00030080
+    MAX_STRING = 1024
+
+    p = Message()
+    len_cmd = len(command)
+    assert len_cmd < MAX_STRING, "vcgencmd command too long"
+    p.header[0] = p.get_size()
+    p.header[2] = GET_GENCMD_RESULT
+    p.header[3] = MAX_STRING
+    p.byte_array[:len_cmd] = map(ord, command)
+    byte_data = bytearray(p.pack())
+    ret_val = fcntl.ioctl(file_desc, 0xC0086400, byte_data)
+    if ret_val < 0:
+        print(f"ioctl_set_msg failed: {ret_val}")
+        return -1
+    p.unpack(byte_data)
+    return p.byte_array.decode("utf8").rstrip('\x00')
 
 def get_cpu_usage():
     # Retrieve and return the CPU usage percentage per core
@@ -48,25 +86,20 @@ def decode_throttling(throttle_hex_value):
 
     return results
 
-def pmic_read_adc():
-    try:
-        # Run the command and capture the output
-        output = subprocess.check_output(['vcgencmd', 'pmic_read_adc'], stderr=subprocess.STDOUT)
-        # Decode byte output to string and split by spaces
-        parts = output.decode('utf-8').strip().split()
-        # Initialize an empty list to store (label, value) tuples
-        result = []
-        # Iterate over pairs of label and value
-        for i in range(0, len(parts), 2):
-            label = parts[i]
-            value = parts[i + 1]
-            result.append((label, value))
-        return result
-    except subprocess.CalledProcessError as e:
-        print(f"Error executing vcgencmd: {e}")
-        return []
+def pmic_read_adc(mb):
+    # Run the command and capture the output
+    output = get_vcgencmd_output(mb, 'pmic_read_adc')
+    # Decode byte output to strin§g and split by spaces
+    parts = output.strip().split()
+    return [(parts[i], parts[i + 1]) for i in range(0, len(parts), 2)]
 
 def main():
+    try:
+        mb = os.open("/dev/vcio", os.O_RDWR)
+    except OSError as e:
+        print(f"Can't open device file you need to run this script as root. Error: {e}")
+        exit(-1)
+
     filename = "telemetry_data.csv"
 
     fieldnames = [
@@ -125,53 +158,66 @@ def main():
         "Throttle_occured",
         "SoftTempLimit_occured",
     ]
-    
+
     if not os.path.exists(filename):
         with open(filename, "w", newline="") as csvfile:
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             writer.writeheader()
-    
+
+    clocks = {
+        "arm": Measure("measure_clock arm"),
+        "core": Measure("measure_clock core"),
+        "h264": Measure("measure_clock h264"),
+        "isp": Measure("measure_clock isp"),
+        "v3d": Measure("measure_clock v3d"),
+        "uart": Measure("measure_clock uart"),
+        "pwm": Measure("measure_clock pwm"),
+        "emmc": Measure("measure_clock emmc"),
+        "pixel": Measure("measure_clock pixel"),
+        "vec": Measure("measure_clock vec"),
+        "hdmi": Measure("measure_clock hdmi"),
+        "dpi": Measure("measure_clock dpi"),
+    }
+
+    volts = {
+        "core": Measure("measure_volts core"),
+        "sdram_c": Measure("measure_volts sdram_c"),
+        "sdram_i": Measure("measure_volts sdram_i"),
+        "sdram_p": Measure("measure_volts sdram_p"),
+    }
+
     while True:
 
         ### GET ALL DATA BEFORE PRINTING ###
 
         # Get status information
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-        fw_version = get_vcgencmd_output("vcgencmd version")
+        fw_version = get_vcgencmd_output(mb, "version")
 
         # Get processor usage information
+
         cpu_percent = psutil.cpu_percent(interval=1)
 
         # Get Vcgencmd metrics
-        arm_mhz = get_vcgencmd_output("vcgencmd measure_clock arm | sed -e 's/frequency(0)=//'")
-        core_mhz = get_vcgencmd_output("vcgencmd measure_clock core | sed -e 's/frequency(0)=//'")
-        h264_mhz = get_vcgencmd_output("vcgencmd measure_clock h264 | sed -e 's/frequency(0)=//'")
-        isp_mhz = get_vcgencmd_output("vcgencmd measure_clock isp | sed -e 's/frequency(0)=//'")
-        v3d_mhz = get_vcgencmd_output("vcgencmd measure_clock v3d | sed -e 's/frequency(0)=//'")
-        uart_mhz = get_vcgencmd_output("vcgencmd measure_clock uart | sed -e 's/frequency(0)=//'")
-        pwm_mhz = get_vcgencmd_output("vcgencmd measure_clock pwm | sed -e 's/frequency(0)=//'")
-        emmc_mhz = get_vcgencmd_output("vcgencmd measure_clock emmc | sed -e 's/frequency(0)=//'")
-        pixel_mhz = get_vcgencmd_output("vcgencmd measure_clock pixel | sed -e 's/frequency(0)=//'")
-        vec_mhz = get_vcgencmd_output("vcgencmd measure_clock vec | sed -e 's/frequency(0)=//'")
-        hdmi_mhz = get_vcgencmd_output("vcgencmd measure_clock hdmi | sed -e 's/frequency(0)=//'")
-        dpi_mhz = get_vcgencmd_output("vcgencmd measure_clock dpi | sed -e 's/frequency(0)=//'")
-        arm_temp = get_vcgencmd_output("vcgencmd measure_temp | sed -e 's/temp=//; s/C//'")
-        core_volt = get_vcgencmd_output("vcgencmd measure_volts core | sed -e 's/volt=//; s/V//'")
-        sdram_c_volt = get_vcgencmd_output("vcgencmd measure_volts sdram_c | sed -e 's/volt=//; s/V//'")
-        sdram_i_volt = get_vcgencmd_output("vcgencmd measure_volts sdram_i | sed -e 's/volt=//; s/V//'")
-        sdram_p_volt = get_vcgencmd_output("vcgencmd measure_volts sdram_p | sed -e 's/volt=//; s/V//'")
+        for _, command in clocks.items():
+            command.value = get_vcgencmd_output(mb, command.command).split('=')[1]
+
+        arm_temp = get_vcgencmd_output(mb, "measure_temp").split('=')[1]
+
+        for _, command in volts.items():
+            command.value = get_vcgencmd_output(mb, command.command).split('=')[1]
 
         # Check for throttling
-        throttle_hex_value = get_vcgencmd_output("vcgencmd get_throttled | sed -e 's/throttled=//'")
+        throttle_hex_value = get_vcgencmd_output(mb, "get_throttled").split('=')[1]
         throttling_status = decode_throttling(throttle_hex_value)
 
         # Measure PMIC telemetry
-        adc_values = pmic_read_adc()
+        adc_values = pmic_read_adc(mb)
 
         ### CLEAR THE TERMINAL BEFORE PRINTING ###
         os.system("clear")  # Use "cls" for Windows
 
-        ### PRINT ALL THE DATA ###        
+        ### PRINT ALL THE DATA ###
         print("## System Info ##")
         print(f"timestamp: \t\t{timestamp}")
         print(f"FW Version: {fw_version}")
@@ -184,67 +230,41 @@ def main():
         print("")
 
         print("## Frequencies ##")
-        print(f"arm: \t\t{arm_mhz[:-6]} MHz")
-        print(f"core: \t\t{core_mhz[:-6]} MHz")
-        print(f"h264: \t\t{h264_mhz[:-6]} MHz") 
-        print(f"isp: \t\t{isp_mhz[:-6]} MHz") 
-        print(f"v3d: \t\t{v3d_mhz[:-6]} MHz") 
-        print(f"uart: \t\t{uart_mhz[:-6]} MHz") 
-        print(f"pwm: \t\t{pwm_mhz[:-6]} MHz") 
-        print(f"emmc: \t\t{emmc_mhz[:-6]} MHz") 
-        print(f"pixel: \t\t{pixel_mhz[:-6]} MHz")         
-        print(f"vec: \t\t{vec_mhz[:-6]} MHz")         
-        print(f"hdmi: \t\t{hdmi_mhz[:-6]} MHz")         
-        print(f"dpi: \t\t{dpi_mhz[:-6]} MHz")
+        for name, command in clocks.items():
+            print(f"{name}: \t\t{command.value[:-6]} MHz")
         print("")
 
         print("## Temperature ##")
-        print(f"arm: \t\t{arm_temp[:-1]}")
-        print("") 
-            
-        print("## Voltages ##")
-        print(f"core: \t\t{core_volt}")
-        print(f"sdram_c: \t{sdram_c_volt}")
-        print(f"sdram_i: \t{sdram_i_volt}")
-        print(f"sdram_p: \t{sdram_p_volt}")
+        print(f"arm: \t\t{arm_temp[:-2]}")
         print("")
-            
+
+        print("## Voltages ##")
+        for name, command in volts.items():
+            if len(name) < 7:
+                print(f"{name}: \t\t{command.value}")
+            else:
+                print(f"{name}: \t{command.value}")
+        print("")
+
         print("## Throttle Info ##")
         print(f"Throttle Hex: {throttle_hex_value}")
         for message, status in throttling_status:
             print(f"{message}: {status}")
-        print("")   
-            
+        print("")
+
         print("## PMIC Telemetry ##")
         for label, value in adc_values:
-            value = value.split('=')[-1]
-            value = value[:-1]
+            value = value.split('=')[-1][:-1]
             print(f"{label}: {value}")
 
         with open(filename, "a", newline="") as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)    
-            
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+
             # Create a dictionary for the row data
             row_data = {
                 "timestamp": timestamp,
                 "cpu_percent": cpu_percent,
-                "arm_mhz": arm_mhz,
-                "core_mhz": core_mhz,
-                "h264_mhz": h264_mhz,
-                "isp_mhz": isp_mhz,
-                "v3d_mhz": v3d_mhz,
-                "uart_mhz": uart_mhz,
-                "pwm_mhz": pwm_mhz,
-                "emmc_mhz": emmc_mhz,
-                "pixel_mhz": pixel_mhz,
-                "vec_mhz": vec_mhz,
-                "hdmi_mhz": hdmi_mhz,
-                "dpi_mhz": dpi_mhz,
-                "arm_temp": arm_temp[:-1],
-                "core_volt": core_volt,
-                "sdram_c_volt": sdram_c_volt,
-                "sdram_i_volt": sdram_i_volt,
-                "sdram_p_volt": sdram_p_volt,
+                "arm_temp": arm_temp[:-2],
                 "throttle_hex": throttle_hex_value,
                 "UV": "No",
                 "ArmFreqCap": "No",
@@ -256,6 +276,12 @@ def main():
                 "SoftTempLimit_occured": "No",
             }
 
+            for clock_name, command in clocks.items():
+                row_data[clock_name + "_mhz"] = command.value[:-6]
+
+            for volt_name, command in volts.items():
+                row_data[volt_name + "_volt"] = command.value
+            
             # Add pmic_read_adc() data dynamically to row_data
             for label, value in adc_values:
                 row_data[label] = value.split('=')[-1][:-1]
@@ -263,10 +289,10 @@ def main():
             # Update row_data with decode_throttling() results
             for message, status in throttling_status:
                 row_data[message] = status
-
             writer.writerow(row_data)
 
             time.sleep(1)  # Wait for 1 second
+    #os.close(mb)
 
 if __name__ == "__main__":
     main()
