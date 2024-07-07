@@ -89,7 +89,7 @@ def decode_throttling(throttle_hex_value):
 def pmic_read_adc(mb):
     # Run the command and capture the output
     output = get_vcgencmd_output(mb, 'pmic_read_adc')
-    # Decode byte output to strin§g and split by spaces
+    # Decode byte output to string and split by spaces
     parts = output.strip().split()
     return [(parts[i], parts[i + 1]) for i in range(0, len(parts), 2)]
 
@@ -100,7 +100,14 @@ def main():
         print(f"Can't open device file you need to run this script as root. Error: {e}")
         exit(-1)
 
-    filename = "telemetry_data.csv"
+    filename = "rpi5_telemetry.csv"
+    
+    # Generate a timestamp
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    
+    # Append the timestamp to the filename
+    base_filename, file_extension = os.path.splitext(filename)
+    filename_with_timestamp = f"{base_filename}_{timestamp}{file_extension}"
 
     fieldnames = [
         "timestamp",
@@ -150,6 +157,10 @@ def main():
         "BATT_V",
         "throttle_hex",
         "UV",
+        "readmr_4",
+        "readmr_5",
+        "readmr_6",
+        "readmr_8",
         "ArmFreqCap",
         "CurThrottle",
         "SoftTempLimit",
@@ -159,10 +170,10 @@ def main():
         "SoftTempLimit_occured",
     ]
 
-    if not os.path.exists(filename):
-        with open(filename, "w", newline="") as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-            writer.writeheader()
+    # Open the file with the new filename
+    with open(filename_with_timestamp, "a", newline="") as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
 
     clocks = {
         "arm": Measure("measure_clock arm"),
@@ -185,6 +196,13 @@ def main():
         "sdram_i": Measure("measure_volts sdram_i"),
         "sdram_p": Measure("measure_volts sdram_p"),
     }
+    
+    mr = {
+        "readmr_4": Measure("readmr 4"),
+        "readmr_5": Measure("readmr 5"),
+        "readmr_6": Measure("readmr 6"),
+        "readmr_8": Measure("readmr 8"),
+    }
 
     while True:
 
@@ -206,6 +224,9 @@ def main():
 
         for _, command in volts.items():
             command.value = get_vcgencmd_output(mb, command.command).split('=')[1]
+            
+        for _, command in mr.items():
+            command.value = get_vcgencmd_output(mb, command.command).split(':')[5]
 
         # Check for throttling
         throttle_hex_value = get_vcgencmd_output(mb, "get_throttled").split('=')[1]
@@ -245,6 +266,11 @@ def main():
             else:
                 print(f"{name}: \t{command.value}")
         print("")
+        
+        print("## Read MR ##")
+        for name, command in mr.items():
+            print(f"{name}: \t{command.value[1:]}")
+        print("")
 
         print("## Throttle Info ##")
         print(f"Throttle Hex: {throttle_hex_value}")
@@ -257,7 +283,7 @@ def main():
             value = value.split('=')[-1][:-1]
             print(f"{label}: {value}")
 
-        with open(filename, "a", newline="") as csvfile:
+        with open(filename_with_timestamp, "a", newline="") as csvfile:
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
 
             # Create a dictionary for the row data
@@ -281,6 +307,9 @@ def main():
 
             for volt_name, command in volts.items():
                 row_data[volt_name + "_volt"] = command.value
+                
+            for mr_name, command in mr.items():
+                row_data[mr_name] = command.value
             
             # Add pmic_read_adc() data dynamically to row_data
             for label, value in adc_values:
@@ -289,9 +318,11 @@ def main():
             # Update row_data with decode_throttling() results
             for message, status in throttling_status:
                 row_data[message] = status
+            
             writer.writerow(row_data)
 
             time.sleep(1)  # Wait for 1 second
+            
     #os.close(mb)
 
 if __name__ == "__main__":
