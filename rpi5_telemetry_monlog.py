@@ -50,6 +50,20 @@ def get_cpu_usage():
     # Retrieve and return the CPU usage percentage per core
     return psutil.cpu_percent(interval=1, percpu=True)
 
+def decode_readmr_4(value):
+    meanings = {
+        "000": "SDRAM low temperature operating limit exceeded",
+        "001": "4x refresh",
+        "010": "2x refresh",
+        "011": "1x refresh (default)",
+        "100": "0.5x refresh",
+        "101": "0.25x refresh, no derating",
+        "110": "0.25x refresh, with derating",
+        "111": "SDRAM high temperature operating limit exceeded",
+    }
+    binary_string = f"{value:03b}" # convert integer in 3-bit binary string
+    return meanings.get(binary_string, "Meaning")
+
 def decode_throttling(throttle_hex_value):
 
     error_messages = {
@@ -155,12 +169,12 @@ def main():
         "HDMI_V",
         "EXT5V_V",
         "BATT_V",
-        "throttle_hex",
-        "UV",
         "readmr_4",
         "readmr_5",
         "readmr_6",
         "readmr_8",
+        "throttle_hex",
+        "UV",
         "ArmFreqCap",
         "CurThrottle",
         "SoftTempLimit",
@@ -244,11 +258,11 @@ def main():
         print(f"FW Version: {fw_version}")
         print("")
 
-        print("## Usage ##")
+        #print("## Usage ##")
         #cpu_usage = get_cpu_usage()
         #for core, usage in enumerate(cpu_usage):
         #    print(f"Core {core}: {usage:.2f}%")
-        print("")
+        #print("")
 
         print("## Frequencies ##")
         for name, command in clocks.items():
@@ -270,8 +284,15 @@ def main():
         print("## Read MR ##")
         for name, command in mr.items():
             print(f"{name}: \t{command.value[1:]}")
+        # decode readmr 4
+        for name, command in mr.items():
+            if command.command == "readmr 4":
+                output = get_vcgencmd_output(mb, command.command).split(':')[5]
+                value = int(output[1:])
+                decoded_message = decode_readmr_4(value)
+                print(f"readmr_4_msg: \t\"{decoded_message}\"")
         print("")
-
+        
         print("## Throttle Info ##")
         print(f"Throttle Hex: {throttle_hex_value}")
         for message, status in throttling_status:
@@ -306,7 +327,7 @@ def main():
                 row_data[clock_name + "_mhz"] = command.value[:-6]
 
             for volt_name, command in volts.items():
-                row_data[volt_name + "_volt"] = command.value
+                row_data[volt_name + "_volt"] = command.value[:-1]
                 
             for mr_name, command in mr.items():
                 row_data[mr_name] = command.value
